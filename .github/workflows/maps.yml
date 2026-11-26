@@ -31,8 +31,11 @@ jobs:
       - name: رفع للـ Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           cd "$RUNNER_TEMP/maps"
+          ls -la
+          ls *.pmtiles.[0-9][0-9][0-9] >/dev/null 2>&1 || { echo "مفيش ملفات خرائط اتبنت"; exit 1; }
           gh release view maps >/dev/null 2>&1 || gh release create maps --title "maps" --notes "خرائط التطبيق (OpenStreetMap / Protomaps). بيتحدّث تلقائيًا."
           for f in *.pmtiles.[0-9][0-9][0-9]; do gh release upload maps "$f" --clobber; done
           gh release upload maps maps_manifest.json --clobber
