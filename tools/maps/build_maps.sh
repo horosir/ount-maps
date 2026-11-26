@@ -21,6 +21,16 @@ find_build() {   # آخر build متاح من Protomaps (بنجرّب آخر 12 
   done; return 1
 }
 
+fetch_pbf() {   # geofabrik-path out : بنجرّب أكتر من مصدر مع إعادة محاولة، والنجاح = ملف أكبر من 1MB
+  local gf="$1" out="$2" u
+  for u in "https://download.geofabrik.de/${gf}-latest.osm.pbf" "https://download.openstreetmap.fr/extracts/${gf}.osm.pbf" "https://download.openstreetmap.fr/extracts/${gf}-latest.osm.pbf"; do
+    echo "جارى تحميل OSM من $u"
+    if curl -fL --retry 3 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o "$out" "$u" && [ "$(stat -c %s "$out" 2>/dev/null || echo 0)" -gt 1000000 ]; then return 0; fi
+    rm -f "$out"
+  done
+  return 1
+}
+
 ENTRIES=()
 add_entry() {   # id name ver file
   local id="$1" name="$2" ver="$3" f="$4" parts=() size i=0
@@ -50,18 +60,22 @@ for C in "${COUNTRIES[@]}"; do
   if [ "$FAKE" = "1" ]; then head -c 3500000 /dev/urandom > "base_$C.pmtiles"; head -c 1200000 /dev/urandom > "det_$C.pmtiles"
   else
     pmtiles extract "https://build.protomaps.com/${BUILD}.pmtiles" "base_$C.pmtiles" --bbox="$BB" --maxzoom="$MAXZ"
-    # طبقة التفاصيل: كهوف/عيون/آبار/ترع/قناطر/خنادق/أنفاق... من OSM (بتتحدّث مع كل بناء)
-    curl -fL "https://download.geofabrik.de/${GF}-latest.osm.pbf" -o "$C.osm.pbf"
-    osmium tags-filter "$C.osm.pbf" \
-      n/natural=cave_entrance,spring,hot_spring,peak,saddle,rock n/man_made=water_well,water_tap,water_tower,watermill,storage_tank n/amenity=drinking_water,fuel,shelter n/waterway=weir,lock_gate,waterfall,dam,stream_end \
-      w/waterway=canal,drain,ditch,dam,weir w/man_made=tunnel,bridge,pipeline w/military=trench,bunker w/tunnel=yes,culvert w/bridge=yes w/natural=cave,wadi,sand,scrub,bare_rock,water,wetland w/landuse=farmland,orchard,quarry \
-      -o "$C.details.osm.pbf" --overwrite
-    osmium export "$C.details.osm.pbf" -f geojsonseq --add-unique-id=type_id -o "$C.details.geojsons" --overwrite
-    tippecanoe -o "det_$C.pmtiles" -l details -Z6 -z"$MAXZ" --drop-densest-as-needed --extend-zooms-if-still-dropping --force --read-parallel "$C.details.geojsons"
-    rm -f "$C.osm.pbf" "$C.details.osm.pbf" "$C.details.geojsons"
+    # طبقة التفاصيل (اختيارية): كهوف/عيون/آبار/ترع/قناطر/خنادق/أنفاق... من OSM. لو كل المصادر فشلت بنكمّل بالخريطة الأساسية بس (مش بنفشل).
+    HAVE_DET=0
+    if fetch_pbf "$GF" "$C.osm.pbf"; then
+      if osmium tags-filter "$C.osm.pbf" \
+        n/natural=cave_entrance,spring,hot_spring,peak,saddle,rock n/man_made=water_well,water_tap,water_tower,watermill,storage_tank n/amenity=drinking_water,fuel,shelter n/waterway=weir,lock_gate,waterfall,dam,stream_end \
+        w/waterway=canal,drain,ditch,dam,weir w/man_made=tunnel,bridge,pipeline w/military=trench,bunker w/tunnel=yes,culvert w/bridge=yes w/natural=cave,wadi,sand,scrub,bare_rock,water,wetland w/landuse=farmland,orchard,quarry \
+        -o "$C.details.osm.pbf" --overwrite \
+        && osmium export "$C.details.osm.pbf" -f geojsonseq --add-unique-id=type_id -o "$C.details.geojsons" --overwrite \
+        && tippecanoe -o "det_$C.pmtiles" -l details -Z6 -z"$MAXZ" --drop-densest-as-needed --extend-zooms-if-still-dropping --force --read-parallel "$C.details.geojsons"; then HAVE_DET=1
+      else echo "⚠ معالجة طبقة التفاصيل فشلت — هنكمّل بالأساسية بس"; fi
+      rm -f "$C.osm.pbf" "$C.details.osm.pbf" "$C.details.geojsons"
+    else echo "⚠ مفيش مصدر OSM اتحمّل — هنكمّل بالخريطة الأساسية بس (طبقة التفاصيل هتتضاف فى تشغيل لاحق)"; fi
   fi
+  [ "$FAKE" = "1" ] && HAVE_DET=1
   add_entry "$C" "$NAME" "$BUILD" "base_$C.pmtiles"
-  add_entry "${C}-details" "${NAME} — التفاصيل (آبار/عيون/كهوف/ترع/قناطر…)" "$BUILD" "det_$C.pmtiles"
+  [ "$HAVE_DET" = "1" ] && add_entry "${C}-details" "${NAME} — التفاصيل (آبار/عيون/كهوف/ترع/قناطر…)" "$BUILD" "det_$C.pmtiles"
   rm -f "base_$C.pmtiles" "det_$C.pmtiles"
 done
 
