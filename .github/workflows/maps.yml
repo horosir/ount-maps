@@ -1,0 +1,38 @@
+name: build-maps
+# يبنى خرائط PMTiles ويرفعها كـ Release ثابت اسمه "maps" (التطبيق بيقرأ maps_manifest.json منه).
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: "الدول (مفصولة بمسافة)"
+        default: "egypt"
+  schedule:
+    - cron: "0 3 * * 0"   # أسبوعيًا يوم الأحد 03:00 UTC
+permissions:
+  contents: write
+concurrency: build-maps
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - name: أدوات
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool jq libsqlite3-dev zlib1g-dev build-essential
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          make -C /tmp/tippecanoe -j"$(nproc)" && sudo make -C /tmp/tippecanoe install
+          URL=$(curl -fsSL https://api.github.com/repos/protomaps/go-pmtiles/releases/latest | jq -r '.assets[] | select(.name|test("Linux_x86_64.tar.gz$")) | .browser_download_url' | head -1)
+          curl -fsSL "$URL" -o /tmp/pm.tgz && sudo tar -xzf /tmp/pm.tgz -C /usr/local/bin pmtiles
+          pmtiles version
+      - name: بناء الخرائط
+        run: bash tools/maps/build_maps.sh "$RUNNER_TEMP/maps" "${{ github.repository }}" ${{ github.event.inputs.countries || 'egypt' }}
+      - name: رفع للـ Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/maps"
+          gh release view maps >/dev/null 2>&1 || gh release create maps --title "maps" --notes "خرائط التطبيق (OpenStreetMap / Protomaps). بيتحدّث تلقائيًا."
+          for f in *.pmtiles.[0-9][0-9][0-9]; do gh release upload maps "$f" --clobber; done
+          gh release upload maps maps_manifest.json --clobber
